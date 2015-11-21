@@ -535,6 +535,40 @@ else
   fast_func_remove_prefix=false
 fi
 
+func_path_prepend ()
+{
+  if eval "test -n \"\$$1\""; then
+    eval "$1=\$2\$PATH_SEPARATOR\$$1"
+  else
+    eval "$1=\$2"
+  fi
+}
+
+func_path_append ()
+{
+  if eval "test -n \"\$$1\""; then
+    func_append $1 ":$2"
+  else
+    eval "$1=\$2"
+  fi
+}
+
+func_path_foreach ()
+{
+  fpf_save_IFS=$IFS
+  fpf_dirs=$1 ; shift
+  fpf_cb=$1 ; shift
+  fpf_rc=false
+
+  IFS=$PATH_SEPARATOR
+  for fpf_dir in $fpf_dirs
+  do
+    "$fpf_cb" "$fpf_dir" "$@" && fpf_rc=:
+  done
+  IFS=$fpf_save_IFS
+  $fpf_rc
+}
+
 # func_remove_suffix var suffix
 # removes the given suffix from the value of the shell variable var.
 # var should be the name of a shell variable.
@@ -1049,10 +1083,11 @@ fi
         if test $# = 0; then
           func_fatal_error "missing argument for --local-dir"
         fi
-        local_gnulib_dir=$1
+        func_path_prepend local_gnulib_dir "$1"
         shift ;;
       --local-dir=* )
-        local_gnulib_dir=`echo "X$1" | sed -e 's/^X--local-dir=//'`
+        local_dir=`echo "X$1" | sed -e 's/^X--local-dir=//'`
+        func_path_prepend local_gnulib_dir "$local_dir"
         shift ;;
       --cache-modules | --cache-module | --cache-modul | --cache-modu | --cache-mod | --cache-mo | --cache-m | --cache- | --cache | --cach | --cac | --ca )
         modcache=true
@@ -1412,9 +1447,18 @@ fi
   # Remove trailing slashes from the directory names. This is necessary for
   # m4base (to avoid an error in func_import) and optional for the others.
   sed_trimtrailingslashes='s,\([^/]\)//*$,\1,'
-  case "$local_gnulib_dir" in
-    */ ) local_gnulib_dir=`echo "$local_gnulib_dir" | sed -e "$sed_trimtrailingslashes"` ;;
-  esac
+  old_local_gnulib_path=$local_gnulib_dir
+  save_IFS=$IFS
+  IFS=:
+  local_gnulib_dir=
+  for dir in $old_local_gnulib_path
+  do
+    case "$dir" in
+      */ ) dir=`echo "$dir" | sed -e "$sed_trimtrailingslashes"` ;;
+    esac
+    func_path_append local_gnulib_dir "$dir"
+  done
+  IFS=$save_IFS
   case "$sourcebase" in
     */ ) sourcebase=`echo "$sourcebase" | sed -e "$sed_trimtrailingslashes"` ;;
   esac
@@ -1457,6 +1501,22 @@ else
   have_associative=false
 fi
 
+func_lookup_local_file ()
+{
+    save_IFS=$IFS
+    IFS=$PATH_SEPARATOR
+    fllf_rc=false
+    for dir in $local_gnulib_dir
+    do
+      test -f "$dir/$1" || continue
+      func_lookup_local_file_result="$dir/$1"
+      fllf_rc=:
+      break
+    done
+    IFS=$save_IFS
+    $fllf_rc
+}
+
 # func_lookup_file file
 # looks up a file in $local_gnulib_dir or $gnulib_dir, or combines it through
 # 'patch'.
@@ -1468,17 +1528,17 @@ fi
 func_lookup_file ()
 {
   lkfile="$1"
-  if test -n "$local_gnulib_dir" && test -f "$local_gnulib_dir/$lkfile"; then
-    lookedup_file="$local_gnulib_dir/$lkfile"
+  if func_lookup_local_file "$lkfile"; then
+    lookedup_file=$func_lookup_local_file_result
     lookedup_tmp=
   else
     if test -f "$gnulib_dir/$lkfile"; then
-      if test -n "$local_gnulib_dir" && test -f "$local_gnulib_dir/$lkfile.diff"; then
+      if func_lookup_local_file "$lkfile.diff"; then
         lkbase=`echo "$lkfile" | sed -e 's,^.*/,,'`
         rm -f "$tmp/$lkbase"
         cp "$gnulib_dir/$lkfile" "$tmp/$lkbase"
-        patch -s "$tmp/$lkbase" < "$local_gnulib_dir/$lkfile.diff" >&2 \
-          || func_fatal_error "patch file $local_gnulib_dir/$lkfile.diff didn't apply cleanly"
+        patch -s "$tmp/$lkbase" < "$func_lookup_local_file_result" >&2 \
+          || func_fatal_error "patch file $func_lookup_local_file_result didn't apply cleanly"
         lookedup_file="$tmp/$lkbase"
         lookedup_tmp=true
       else
@@ -1507,6 +1567,12 @@ func_sanitize_modulelist ()
       -e '/~$/d'
 }
 
+
+func_modules_in_dir ()
+{
+  (test -d "$1" && cd "$1" && find modules -type f -print)
+}
+
 # func_all_modules
 # Input:
 # - local_gnulib_dir  from --local-dir
@@ -1517,13 +1583,16 @@ func_all_modules ()
   # --extract-tests-module if desired.
   {
     (cd "$gnulib_dir" && find modules -type f -print | sed -e 's,^modules/,,')
-    if test -n "$local_gnulib_dir" && test -d "$local_gnulib_dir/modules"; then
-      (cd "$local_gnulib_dir" && find modules -type f -print | sed -e 's,^modules/,,' -e 's,\.diff$,,')
-    fi
+    func_path_foreach "$local_gnulib_dir" func_modules_in_dir | sed -e 's,^modules/,,' -e 's,\.diff$,,'
   } \
       | func_sanitize_modulelist \
       | sed -e '/-tests$/d' \
       | LC_ALL=C sort -u
+}
+
+func_exists_local_module ()
+{
+    test -d "$1/modules" && test -f "$1/modules/$2";
 }
 
 # func_exists_module module
@@ -1533,8 +1602,7 @@ func_all_modules ()
 func_exists_module ()
 {
   { test -f "$gnulib_dir/modules/$1" \
-    || { test -n "$local_gnulib_dir" && test -d "$local_gnulib_dir/modules" \
-         && test -f "$local_gnulib_dir/modules/$1"; }; } \
+    || func_path_foreach "$local_gnulib_dir" func_exists_local_module "$1" ; } \
   && test "ChangeLog" != "$1" \
   && test "COPYING" != "$1" \
   && test "README" != "$1" \
@@ -2466,8 +2534,7 @@ func_get_tests_module ()
 {
   # The naming convention for tests modules is hardwired: ${module}-tests.
   if test -f "$gnulib_dir/modules/$1"-tests \
-     || { test -n "$local_gnulib_dir" && test -d "$local_gnulib_dir/modules" \
-          && test -f "$local_gnulib_dir/modules/$1"-tests; }; then
+     || func_path_foreach "$local_gnulib_dir" func_exists_local_module "$1-tests"; then
     echo "$1"-tests
   fi
 }
@@ -3124,6 +3191,21 @@ func_dest_tmpfilename ()
   fi
 }
 
+func_should_symlink ()
+{
+  test -n "$symbolic" \
+    || { test -n "$lsymbolic" \
+         && func_is_local_file "$lookedup_file" "$f"; }
+}
+
+
+func_is_local_file ()
+{
+  dname=$1
+  func_remove_suffix dname "$2"
+  func_path_foreach local_gnulib_dir test = "$dname"
+}
+
 # func_add_file
 # copies a file from gnulib into the destination directory. The destination
 # is known to not exist.
@@ -3144,9 +3226,7 @@ func_add_file ()
 {
   if $doit; then
     echo "Copying file $g"
-    if { test -n "$symbolic" \
-         || { test -n "$lsymbolic" \
-              && test "$lookedup_file" = "$local_gnulib_dir/$f"; }; } \
+    if func_should_symlink \
        && test -z "$lookedup_tmp" \
        && cmp -s "$lookedup_file" "$tmpfile"; then
       func_ln_if_changed "$lookedup_file" "$destdir/$g"
@@ -3188,9 +3268,7 @@ func_update_file ()
         echo "Replacing file $g (non-gnulib code backed up in ${g}~) !!"
       fi
       mv -f "$destdir/$g" "$destdir/${g}~" || func_fatal_error "failed"
-      if { test -n "$symbolic" \
-           || { test -n "$lsymbolic" \
-                && test "$lookedup_file" = "$local_gnulib_dir/$f"; }; } \
+      if func_should_symlink \
          && test -z "$lookedup_tmp" \
          && cmp -s "$lookedup_file" "$tmpfile"; then
         func_ln_if_changed "$lookedup_file" "$destdir/$g"
@@ -4288,6 +4366,30 @@ func_import ()
     fi
   fi
 
+  func_reconstruct_one ()
+  {
+    cached_dir=$1
+    if test -n "$cached_dir"; then
+      case "$destdir" in
+        /*)
+          func_path_append local_gnulib_dir "$destdir/$cached_dir" ;;
+        *)
+          case "$cached_dir" in
+            /*)
+              func_path_append local_gnulib_dir "$destdir/$cached_dir" ;;
+            *)
+              func_relconcat "$destdir" "$cached_dir"
+              func_path_append local_gnulib_dir "$relconcat" ;;
+          esac ;;
+      esac
+    fi
+  }
+
+  func_reconstruct_cached_local_gnulib_dir ()
+  {
+    func_path_foreach "$cached_local_gnulib_dir" func_reconstruct_one
+  }
+
   if test "$mode" = import; then
     # In 'import' mode, the new set of specified modules overrides the cached
     # set of modules. Ignore the cached settings.
@@ -4301,20 +4403,7 @@ func_import ()
     # The local_gnulib_dir defaults to the cached one. Recall that the cached one
     # is relative to $destdir, whereas the one we use is relative to . or absolute.
     if test -z "$local_gnulib_dir"; then
-      if test -n "$cached_local_gnulib_dir"; then
-        case "$destdir" in
-          /*)
-            local_gnulib_dir="$destdir/$cached_local_gnulib_dir" ;;
-          *)
-            case "$cached_local_gnulib_dir" in
-              /*)
-                local_gnulib_dir="$destdir/$cached_local_gnulib_dir" ;;
-              *)
-                func_relconcat "$destdir" "$cached_local_gnulib_dir"
-                local_gnulib_dir="$relconcat" ;;
-            esac ;;
-        esac
-      fi
+      func_reconstruct_cached_local_gnulib_dir
     fi
     case $mode in
       add-import)
@@ -4802,10 +4891,19 @@ s,^\(.................................................[^ ]*\) *,                
 
   # Command-line invocation printed in a comment in generated gnulib-cache.m4.
   actioncmd="gnulib-tool --import"
-  func_append actioncmd " --dir=$destdir"
-  if test -n "$local_gnulib_dir"; then
-    func_append actioncmd " --local-dir=$local_gnulib_dir"
+  save_IFS=$IFS
+  IFS=$PATH_SEPARATOR
+
+  local_dirs=
+  for local_dir in $local_gnulib_dir
+  do
+    local_dirs=" --local-dir=$local_dir$local_dirs"
+  done
+  IFS=$save_IFS
+  if test -n "$local_dirs"; then
+    func_append actioncmd " $local_dirs"
   fi
+
   func_append actioncmd " --lib=$libname"
   func_append actioncmd " --source-base=$sourcebase"
   func_append actioncmd " --m4-base=$m4base"
@@ -5100,6 +5198,31 @@ s,//*$,/,'
     fi
   fi
 
+  func_relative_gnulib_path ()
+  {
+    save_IFS=$IFS
+    IFS=$PATH_SEPARATOR
+    relative_gnulib_path=
+    for local_dir in $local_gnulib_dir
+    do
+      # Store the local_dir relative to destdir.
+      case "$local_dir" in
+        "" | /*)
+          relative_local_dir="$local_dir" ;;
+        * )
+          case "$destdir" in
+            /*) relative_local_dir="$local_dir" ;;
+            *)
+              # destdir, local_dir are both relative.
+              func_relativize "$destdir" "$local_dir"
+              relative_local_dir="$reldir" ;;
+          esac ;;
+      esac
+      func_path_append relative_gnulib_path "$relative_local_dir"
+    done
+    IFS=$save_IFS
+  }
+
   # Create m4/gnulib-cache.m4.
   func_dest_tmpfilename $m4base/gnulib-cache.m4
   (
@@ -5115,20 +5238,8 @@ s,//*$,/,'
     echo "#   $actioncmd"
     echo
     echo "# Specification in the form of a few gnulib-tool.m4 macro invocations:"
-    # Store the local_gnulib_dir relative to destdir.
-    case "$local_gnulib_dir" in
-      "" | /*)
-        relative_local_gnulib_dir="$local_gnulib_dir" ;;
-      * )
-        case "$destdir" in
-          /*) relative_local_gnulib_dir="$local_gnulib_dir" ;;
-          *)
-            # destdir, local_gnulib_dir are both relative.
-            func_relativize "$destdir" "$local_gnulib_dir"
-            relative_local_gnulib_dir="$reldir" ;;
-        esac ;;
-    esac
-    echo "gl_LOCAL_DIR([$relative_local_gnulib_dir])"
+    func_relative_gnulib_path
+    echo "gl_LOCAL_DIR([$relative_gnulib_path])"
     echo "gl_MODULES(["
     echo "$specified_modules" | sed -e 's/^/  /g'
     echo "])"
@@ -5758,9 +5869,7 @@ func_create_testdir ()
         cp -p "$lookedup_file" "$testdir/$g"
       else
         ln "$lookedup_file" "$testdir/$g" 2>/dev/null ||
-        if { test -n "$symbolic" \
-             || { test -n "$lsymbolic" \
-                  && test "$lookedup_file" = "$local_gnulib_dir/$f"; }; }; then
+        if func_should_symlink; then
           func_ln "$lookedup_file" "$testdir/$g"
         else
           cp -p "$lookedup_file" "$testdir/$g"
@@ -6287,15 +6396,13 @@ s/\([.*$]\)/[\1]/g'
     for filename
     do
       if test -f "$gnulib_dir/$filename" \
-         || { test -n "$local_gnulib_dir" && test -f "$local_gnulib_dir/$filename"; }; then
+         || func_lookup_local_file "$filename"; then
         filename_anywhere_regex=`echo "$filename" | sed -e "$sed_literal_to_basic_regex"`
         filename_line_regex='^'"$filename_anywhere_regex"'$'
         module_candidates=`
           {
             (cd "$gnulib_dir" && find modules -type f -print | xargs -n 100 grep -l "$filename_line_regex" /dev/null | sed -e 's,^modules/,,')
-            if test -n "$local_gnulib_dir" && test -d "$local_gnulib_dir/modules"; then
-              (cd "$local_gnulib_dir" && find modules -type f -print | xargs -n 100 grep -l "$filename_anywhere_regex" /dev/null | sed -e 's,^modules/,,' -e 's,\.diff$,,')
-            fi
+            func_path_foreach "$local_gnulib_dir" func_modules_in_dir | xargs -n 100 grep -l "$filename_anywhere_regex" /dev/null | sed -e 's,^modules/,,' -e 's,\.diff$,,'
           } \
             | func_sanitize_modulelist \
             | LC_ALL=C sort -u
