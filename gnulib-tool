@@ -3208,7 +3208,7 @@ func_should_symlink ()
 func_is_local_file ()
 {
   dname=$1
-  func_remove_suffix dname "$2"
+  func_remove_suffix dname "/$2"
   func_path_foreach "$local_gnulib_dir" test = "$dname"
 }
 
