@@ -406,16 +406,6 @@ func_gnulib_dir ()
       # The 'case' statement is an optimization, to avoid evaluating the
       # explicit canonicalization command when $PATH contains no empty fields.
       self_abspathname=
-      if test "${PATH_SEPARATOR+set}" != set; then
-        # Determine PATH_SEPARATOR by trying to find /bin/sh in a PATH which
-        # contains only /bin. Note that ksh looks also at the FPATH variable,
-        # so we have to set that as well for the test.
-        PATH_SEPARATOR=:
-        (PATH='/bin;/bin'; FPATH=$PATH; sh -c :) >/dev/null 2>&1 \
-          && { (PATH='/bin:/bin'; FPATH=$PATH; sh -c :) >/dev/null 2>&1 \
-                 || PATH_SEPARATOR=';'
-             }
-      fi
       if test "$PATH_SEPARATOR" = ";"; then
         # On Windows, programs are searched in "." before $PATH.
         pathx=".;$PATH"
@@ -535,6 +525,20 @@ else
   fast_func_remove_prefix=false
 fi
 
+func_determine_path_separator ()
+{
+  if test "${PATH_SEPARATOR+set}" != set; then
+    # Determine PATH_SEPARATOR by trying to find /bin/sh in a PATH which
+    # contains only /bin. Note that ksh looks also at the FPATH variable,
+    # so we have to set that as well for the test.
+    PATH_SEPARATOR=:
+    (PATH='/bin;/bin'; FPATH=$PATH; sh -c :) >/dev/null 2>&1 \
+      && { (PATH='/bin:/bin'; FPATH=$PATH; sh -c :) >/dev/null 2>&1 \
+             || PATH_SEPARATOR=';'
+         }
+  fi
+}
+
 func_path_prepend ()
 {
   if eval "test -n \"\$$1\""; then
@@ -547,7 +551,7 @@ func_path_prepend ()
 func_path_append ()
 {
   if eval "test -n \"\$$1\""; then
-    func_append $1 ":$2"
+    func_append "$1" "$PATH_SEPARATOR$2"
   else
     eval "$1=\$2"
   fi
@@ -934,6 +938,8 @@ fi
 
 # Unset CDPATH.  Otherwise, output from 'cd dir' can surprise callers.
 (unset CDPATH) >/dev/null 2>&1 && unset CDPATH
+
+func_determine_path_separator
 
 # Command-line option processing.
 # Removes the OPTIONS from the arguments. Sets the variables:
