@@ -525,6 +525,7 @@ else
   fast_func_remove_prefix=false
 fi
 
+# Determine whether we should use ':' or ';' as PATH_SEPARATOR.
 func_determine_path_separator ()
 {
   if test "${PATH_SEPARATOR+set}" != set; then
@@ -539,6 +540,9 @@ func_determine_path_separator ()
   fi
 }
 
+# func_path_prepend pathvar directory
+# puts directory before pathvar, delimiting directories by PATH_SEPARATOR.
+# Newly added directory into pathvar has the highest priority.
 func_path_prepend ()
 {
   if eval "test -n \"\$$1\""; then
@@ -548,6 +552,9 @@ func_path_prepend ()
   fi
 }
 
+# func_path_append pathvar directory
+# Similar to func_path_prepend except that the newest directory has the lowest
+# priority.
 func_path_append ()
 {
   if eval "test -n \"\$$1\""; then
@@ -557,6 +564,9 @@ func_path_append ()
   fi
 }
 
+# func_path_foreach path method args
+# Execute method for each directory in path.  The method will be called
+# like: `method directory args`
 func_path_foreach ()
 {
   fpf_save_IFS=$IFS
@@ -939,6 +949,8 @@ fi
 # Unset CDPATH.  Otherwise, output from 'cd dir' can surprise callers.
 (unset CDPATH) >/dev/null 2>&1 && unset CDPATH
 
+# Determine the path separator early because the following option parsing code
+# requires that.
 func_determine_path_separator
 
 # Command-line option processing.
@@ -1507,6 +1519,13 @@ else
   have_associative=false
 fi
 
+# func_lookup_local_file file
+# looks up a file in $local_gnulib_path.
+# Input:
+# - local_gnulib_path  from --local-dir
+# Output:
+# - func_lookup_local_file_result  name of the file, valid only when the
+#                   function succeeded.
 func_lookup_local_file ()
 {
     save_IFS=$IFS
@@ -1574,6 +1593,8 @@ func_sanitize_modulelist ()
 }
 
 
+# func_modules_in_dir dir
+# outputs all module files in dir to standard output.
 func_modules_in_dir ()
 {
   (test -d "$1" && cd "$1" && find modules -type f -print)
@@ -1596,6 +1617,8 @@ func_all_modules ()
       | LC_ALL=C sort -u
 }
 
+# func_exists_local_module dir module
+# returns true if module exists in dir
 func_exists_local_module ()
 {
     test -d "$1/modules" && test -f "$1/modules/$2";
@@ -3197,19 +3220,28 @@ func_dest_tmpfilename ()
   fi
 }
 
-func_should_symlink ()
-{
-  test -n "$symbolic" \
-    || { test -n "$lsymbolic" \
-         && func_is_local_file "$lookedup_file" "$f"; }
-}
-
-
+# func_is_local_file lookedup_file file
+# check whether file should be instantiated from local gnulib directory
 func_is_local_file ()
 {
   dname=$1
   func_remove_suffix dname "/$2"
   func_path_foreach "$local_gnulib_path" test = "$dname"
+}
+
+# func_should_symlink
+# returns 0 when the file $f should be symlinked
+# Input:
+# - symbolic        true if files should be symlinked, copied otherwise
+# - lsymbolic       true if files from local_gnulib_path should be symlinked,
+#                   copied otherwise
+# - f               the original file name
+# - lookedup_file   name of the merged (combined) file
+func_should_symlink ()
+{
+  test -n "$symbolic" \
+    || { test -n "$lsymbolic" \
+         && func_is_local_file "$lookedup_file" "$f"; }
 }
 
 # func_add_file
@@ -4372,7 +4404,13 @@ func_import ()
     fi
   fi
 
-  func_reconstruct_one ()
+  # func_reconstruct_cached_dir
+  # callback for func_reconstruct_cached_local_gnulib_path
+  # Input:
+  # - destdir         from --dir
+  # Output:
+  # - local_gnulib_path  restored '--local-dir' path from cache
+  func_reconstruct_cached_dir ()
   {
     cached_dir=$1
     if test -n "$cached_dir"; then
@@ -4391,9 +4429,17 @@ func_import ()
     fi
   }
 
+  # func_reconstruct_cached_local_gnulib_path
+  # reconstruct local_gnulib_path from cached_local_gnulib_path to be set
+  # relatively to $destdir again.
+  # Input:
+  # - cached_local_gnulib_path  local_gnulib_path stored within gnulib-cache.m4
+  # - destdir         from --dir
+  # Output:
+  # - local_gnulib_path  restored '--local-dir' path from cache
   func_reconstruct_cached_local_gnulib_path ()
   {
-    func_path_foreach "$cached_local_gnulib_path" func_reconstruct_one
+    func_path_foreach "$cached_local_gnulib_path" func_reconstruct_cached_dir
   }
 
   if test "$mode" = import; then
@@ -5204,11 +5250,18 @@ s,//*$,/,'
     fi
   fi
 
-  func_relative_gnulib_path ()
+  # func_count_relative_local_gnulib_path
+  # gl_LOCAL_DIR requires local_gnulib_path to be set relatively to destdir
+  # Input:
+  # - local_gnulib_path  from --local-dir
+  # - destdir           from --dir
+  # Output:
+  # - relative_local_dir  path to be stored into gl_LOCAL_DIR
+  func_count_relative_local_gnulib_path ()
   {
     save_IFS=$IFS
     IFS=$PATH_SEPARATOR
-    relative_gnulib_path=
+    relative_local_gnulib_path=
     for local_dir in $local_gnulib_path
     do
       # Store the local_dir relative to destdir.
@@ -5224,7 +5277,7 @@ s,//*$,/,'
               relative_local_dir="$reldir" ;;
           esac ;;
       esac
-      func_path_append relative_gnulib_path "$relative_local_dir"
+      func_path_append relative_local_gnulib_path "$relative_local_dir"
     done
     IFS=$save_IFS
   }
@@ -5244,8 +5297,8 @@ s,//*$,/,'
     echo "#   $actioncmd"
     echo
     echo "# Specification in the form of a few gnulib-tool.m4 macro invocations:"
-    func_relative_gnulib_path
-    echo "gl_LOCAL_DIR([$relative_gnulib_path])"
+    func_count_relative_local_gnulib_path
+    echo "gl_LOCAL_DIR([$relative_local_gnulib_path])"
     echo "gl_MODULES(["
     echo "$specified_modules" | sed -e 's/^/  /g'
     echo "])"
